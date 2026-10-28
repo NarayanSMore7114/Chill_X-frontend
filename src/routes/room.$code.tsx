@@ -71,11 +71,18 @@ function Room() {
   const [me] = useState<Listener>(() => {
     if (typeof window !== "undefined") {
       try {
+        let persistentId = sessionStorage.getItem("chillx-user-id");
+        if (!persistentId) {
+          persistentId = `user_${Math.random().toString(36).substring(2, 9)}_${Date.now()}`;
+          sessionStorage.setItem("chillx-user-id", persistentId);
+        }
+
         const s = sessionStorage.getItem("chillx-user");
         if (s) {
           const u = JSON.parse(s);
-          return { id: "me", name: u.name?.trim() || "You", color: u.color || "bg-avatar-6" };
+          return { id: persistentId, name: u.name?.trim() || "You", color: u.color || "bg-avatar-6" };
         }
+        return { id: persistentId, name: "You", color: "bg-avatar-6" };
       } catch {}
     }
     return { id: "me", name: "You", color: "bg-avatar-6" };
@@ -100,9 +107,7 @@ function Room() {
   const [myId, setMyId] = useState<string>("");
   const [needsAudioUnlock, setNeedsAudioUnlock] = useState(true);
 
-  // Floating live emoji reaction state
   const [reactions, setReactions] = useState<FloatingReaction[]>([]);
-
   const [skipVotes, setSkipVotes] = useState({ count: 0, required: 1 });
   const [hasVotedSkip, setHasVotedSkip] = useState(false);
 
@@ -123,10 +128,35 @@ function Room() {
   const unlockAudio = () => {
     setNeedsAudioUnlock(false);
     cmd("unMute");
+    cmd("setVolume", [volume]);
     if (playing) cmd("playVideo");
   };
 
-  // Real-time metadata capture from YouTube player iframe
+  // Global browser gesture unlocker
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const handleFirstGesture = () => {
+      setNeedsAudioUnlock(false);
+      cmd("unMute");
+      cmd("setVolume", [volume]);
+      if (playing) {
+        cmd("playVideo");
+      }
+      window.removeEventListener("click", handleFirstGesture);
+      window.removeEventListener("touchstart", handleFirstGesture);
+    };
+
+    window.addEventListener("click", handleFirstGesture, { passive: true });
+    window.addEventListener("touchstart", handleFirstGesture, { passive: true });
+
+    return () => {
+      window.removeEventListener("click", handleFirstGesture);
+      window.removeEventListener("touchstart", handleFirstGesture);
+    };
+  }, [playing, volume]);
+
+  // YouTube duration message listener
   useEffect(() => {
     if (typeof window === "undefined") return;
 
@@ -165,8 +195,8 @@ function Room() {
   useEffect(() => {
     if (typeof window === "undefined" || !cleanCode) return;
 
-    const username = me.name !== "You" ? me.name : `User-${socket.id ? socket.id.slice(0, 4) : "Guest"}`;
-    socket.emit("join_room", { roomcode: cleanCode, username });
+    const username = me.name !== "You" ? me.name : `User-${me.id.slice(-4)}`;
+    socket.emit("join_room", { roomcode: cleanCode, username, userId: me.id });
 
     const handleSyncState = (data: {
       recentMessages?: Message[];
@@ -258,7 +288,7 @@ function Room() {
     };
 
     const handleReceiveMessage = (msg: { id?: string; senderId?: string; user?: string; name?: string; message?: string; text?: string; time?: string; color?: string }) => {
-      if (msg.senderId && msg.senderId === socket.id) return;
+      if (msg.senderId && (msg.senderId === socket.id || msg.senderId === me.id)) return;
       setMessages((prev) => [
         ...prev,
         {
@@ -282,7 +312,7 @@ function Room() {
       }));
       setActiveUsers(mapped);
 
-      const meEntry = usersList.find((u) => u.id === socket.id);
+      const meEntry = usersList.find((u) => u.id === me.id);
       if (meEntry) {
         setIsHost(!!meEntry.isHost);
         setCanPlay(!!meEntry.canPlay);
@@ -331,7 +361,7 @@ function Room() {
       socket.off("room_users_update", handleRoomUsers);
       socket.off("receive_reaction", handleReceiveReaction);
     };
-  }, [cleanCode, me.name]);
+  }, [cleanCode, me.name, me.id]);
 
   useEffect(() => {
     if (!playing) return;
@@ -490,7 +520,7 @@ function Room() {
     const currentName = me.name && me.name !== "You" ? me.name : "You";
     const localMsg: Message = {
       id: String(Date.now()),
-      userId: "me",
+      userId: me.id,
       name: currentName,
       color: me.color,
       text,
@@ -513,7 +543,6 @@ function Room() {
 
   return (
     <div className="bg-ambient flex h-screen flex-col overflow-hidden select-none">
-      {/* Audio Unlock Banner */}
       {needsAudioUnlock && (
         <div 
           onClick={unlockAudio}
@@ -566,44 +595,49 @@ function Room() {
         </div>
 
         <div className="flex items-center gap-3">
+          {/* Avatar Stack with Host DJ permission controls */}
           <div className="relative flex -space-x-2">
             {listeners.map((l) => (
               <div key={l.id} className="relative">
                 <button
                   type="button"
-                  title={isHost && l.id !== socket.id ? `Manage permissions for ${l.name}` : l.name}
-                  onClick={() => {
-                    if (isHost && l.id !== socket.id) {
+                  title={isHost && l.id !== me.id ? `Manage permissions for ${l.name}` : l.name}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (isHost && l.id !== me.id) {
                       setSelectedUserForDj(selectedUserForDj === l.id ? null : l.id);
                     }
                   }}
                   className={cn(
                     "rounded-full ring-2 ring-background transition hover:scale-105",
-                    isHost && l.id !== socket.id && "cursor-pointer hover:ring-primary"
+                    isHost && l.id !== me.id && "cursor-pointer hover:ring-primary ring-offset-1"
                   )}
                 >
                   <Avatar l={l} />
                 </button>
 
                 {selectedUserForDj === l.id && (
-                  <div className="absolute right-0 top-11 z-50 w-48 rounded-xl border border-border bg-popover/95 p-2 shadow-2xl backdrop-blur-xl">
-                    <p className="px-2 py-1 text-xs font-semibold text-foreground truncate">{l.name}</p>
-                    <p className="px-2 text-[10px] text-muted-foreground">
-                      Status: {l.canPlay ? "Co-DJ (Can Play)" : "Listener"}
-                    </p>
-                    <button
-                      onClick={() => toggleDjPermission(l.id)}
-                      className={cn(
-                        "press mt-2 flex w-full items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold transition",
-                        l.canPlay
-                          ? "bg-destructive/15 text-destructive hover:bg-destructive hover:text-white"
-                          : "bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500 hover:text-white"
-                      )}
-                    >
-                      {l.canPlay ? <ShieldAlert className="size-3.5" /> : <ShieldCheck className="size-3.5" />}
-                      {l.canPlay ? "Revoke DJ Rights" : "Grant DJ Rights"}
-                    </button>
-                  </div>
+                  <>
+                    <div className="fixed inset-0 z-40" onClick={() => setSelectedUserForDj(null)} />
+                    <div className="absolute right-0 top-11 z-50 w-52 rounded-xl border border-border bg-popover/95 p-3 shadow-2xl backdrop-blur-xl">
+                      <p className="px-1 text-xs font-bold text-foreground truncate">{l.name}</p>
+                      <p className="px-1 text-[11px] text-muted-foreground mt-0.5">
+                        Role: {l.canPlay ? "Co-DJ (Can Control Playback)" : "Standard Listener"}
+                      </p>
+                      <button
+                        onClick={() => toggleDjPermission(l.id)}
+                        className={cn(
+                          "press mt-2.5 flex w-full items-center justify-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold transition shadow-sm",
+                          l.canPlay
+                            ? "bg-destructive/15 text-destructive hover:bg-destructive hover:text-white"
+                            : "bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500 hover:text-white"
+                        )}
+                      >
+                        {l.canPlay ? <ShieldAlert className="size-3.5" /> : <ShieldCheck className="size-3.5" />}
+                        {l.canPlay ? "Revoke DJ Rights" : "Grant DJ Rights"}
+                      </button>
+                    </div>
+                  </>
                 )}
               </div>
             ))}
@@ -627,7 +661,6 @@ function Room() {
             </div>
 
             <div className="relative aspect-video overflow-hidden rounded-2xl border border-border bg-card shadow-screen z-10">
-              {/* Floating Real-Time Reaction Overlay */}
               <div className="pointer-events-none absolute inset-0 overflow-hidden z-20">
                 {reactions.map((r) => (
                   <div
@@ -646,9 +679,9 @@ function Room() {
                     ref={frame}
                     key={activeVideoId}
                     className="size-full"
-                    src={`https://www.youtube.com/embed/${activeVideoId}?enablejsapi=1&origin=${encodeURIComponent(typeof window !== "undefined" ? window.location.origin : "")}&controls=0&rel=0&modestbranding=1&autoplay=0`}
+                    src={`https://www.youtube.com/embed/${activeVideoId}?enablejsapi=1&origin=${encodeURIComponent(typeof window !== "undefined" ? window.location.origin : "")}&controls=0&rel=0&modestbranding=1&playsinline=1`}
                     title={current?.title || "Chill_X Track"}
-                    allow="autoplay; encrypted-media"
+                    allow="autoplay; encrypted-media; picture-in-picture"
                     onLoad={() => {
                       cmd("setVolume", [volume]);
                       if (muted) cmd("mute");
@@ -657,14 +690,29 @@ function Room() {
                       cmd("getDuration");
                     }}
                   />
-                  <div className="absolute inset-0 cursor-default" onClick={unlockAudio} />
+
+                  {needsAudioUnlock && (
+                    <div
+                      onClick={unlockAudio}
+                      className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-background/80 backdrop-blur-sm cursor-pointer transition hover:bg-background/70"
+                    >
+                      <div className="grid size-16 place-items-center rounded-full bg-primary text-primary-foreground shadow-glow animate-bounce">
+                        <Play className="ml-1 size-8 fill-current" />
+                      </div>
+                      <p className="mt-3 text-sm font-semibold text-foreground">
+                        Click to Join & Listen Live
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        Enables synchronized room audio
+                      </p>
+                    </div>
+                  )}
                 </>
               ) : (
                 <div className="grid size-full place-items-center text-muted-foreground">Queue is empty — search for a track</div>
               )}
             </div>
 
-            {/* Quick Live Emoji Reactions Bar */}
             <div className="glass flex items-center justify-between rounded-xl px-4 py-2 text-xs">
               <span className="flex items-center gap-1.5 font-semibold text-muted-foreground">
                 <Sparkles className="size-3.5 text-primary" /> React Live:
@@ -707,10 +755,10 @@ function Room() {
           {tab === "queue" ? (
             <QueueList
               queue={queue} currentId={currentId} canControl={canControl}
-              onPlay={play} onVote={voteTrack} onRemove={removeTrack} currentSocketId={socket.id || myId}
+              onPlay={play} onVote={voteTrack} onRemove={removeTrack} currentUserId={me.id}
             />
           ) : (
-            <Chat messages={messages} meId="me" onSend={send} />
+            <Chat messages={messages} meId={me.id} onSend={send} />
           )}
         </aside>
       </div>
@@ -811,7 +859,7 @@ function QueueList({
   onPlay,
   onVote,
   onRemove,
-  currentSocketId,
+  currentUserId,
 }: {
   queue: Track[];
   currentId: string;
@@ -819,7 +867,7 @@ function QueueList({
   onPlay: (id: string) => void;
   onVote: (id: string) => void;
   onRemove: (id: string) => void;
-  currentSocketId?: string;
+  currentUserId?: string;
 }) {
   return (
     <ul className="flex-1 space-y-1 overflow-y-auto px-3 pb-3">
@@ -828,7 +876,7 @@ function QueueList({
         const vid = getVideoId(t);
         const active = vid === currentId || t.id === currentId;
         const votes = Array.isArray(t.votes) ? t.votes : [];
-        const hasVoted = currentSocketId ? votes.includes(currentSocketId) : false;
+        const hasVoted = currentUserId ? (votes.includes(currentUserId) || (socket.id && votes.includes(socket.id))) : false;
 
         return (
           <li
@@ -883,7 +931,6 @@ function QueueList({
 
             <span className="font-display text-xs tabular-nums text-muted-foreground">{fmt(t.duration)}</span>
 
-            {/* Remove Track Button for DJs and Host */}
             {canControl && (
               <button
                 type="button"
