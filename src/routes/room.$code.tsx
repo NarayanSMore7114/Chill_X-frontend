@@ -112,6 +112,8 @@ function Room() {
   const [hasVotedSkip, setHasVotedSkip] = useState(false);
 
   const frame = useRef<HTMLIFrameElement>(null);
+  const pendingSyncRef = useRef<{ time: number; shouldPlay: boolean } | null>(null);
+const iframeReadyRef = useRef<boolean>(false);
   const canControl = isHost || canPlay;
 
   const idx = Math.max(0, queue.findIndex((t) => getVideoId(t) === currentId || t.id === currentId));
@@ -211,6 +213,7 @@ function Room() {
       if (typeof data?.isHost === "boolean") setIsHost(data.isHost);
       if (typeof data?.canPlay === "boolean") setCanPlay(data.canPlay);
       if (data?.recentMessages && Array.isArray(data.recentMessages)) setMessages(data.recentMessages);
+
       if (data?.queue && Array.isArray(data.queue) && data.queue.length > 0) {
         setQueue(data.queue);
         if (data.currentTrackId) {
@@ -223,17 +226,20 @@ function Room() {
         setHasVotedSkip(data.skipVotes.hasVoted);
       }
 
-      if (typeof data?.currentTime === "number" && data.currentTime > 0) {
-        setTime(data.currentTime);
-        cmd("seekTo", [data.currentTime, true]);
-      }
+      const syncTime = typeof data?.currentTime === "number" ? data.currentTime : 0;
+      const shouldPlay = !!data?.isPlaying;
 
-      if (data?.isPlaying) {
-        setPlaying(true);
-        cmd("playVideo");
-      } else {
-        setPlaying(false);
-        cmd("pauseVideo");
+      setTime(syncTime);
+      setPlaying(shouldPlay);
+
+      // Save sync parameters in ref so the iframe can apply them when ready
+      pendingSyncRef.current = { time: syncTime, shouldPlay };
+
+      // If iframe is already initialized and ready, apply immediately
+      if (iframeReadyRef.current) {
+        if (syncTime > 0) cmd("seekTo", [syncTime, true]);
+        if (shouldPlay) cmd("playVideo");
+        else cmd("pauseVideo");
       }
     };
 
@@ -683,10 +689,26 @@ function Room() {
                     title={current?.title || "Chill_X Track"}
                     allow="autoplay; encrypted-media; picture-in-picture"
                     onLoad={() => {
+                      iframeReadyRef.current = true;
                       cmd("setVolume", [volume]);
                       if (muted) cmd("mute");
-                      if (playing) cmd("playVideo");
-                      else cmd("pauseVideo");
+
+                      // Apply pending sync data once iframe is alive
+                      if (pendingSyncRef.current) {
+                        const { time: syncTime, shouldPlay } = pendingSyncRef.current;
+                        if (syncTime > 0) {
+                          cmd("seekTo", [syncTime, true]);
+                        }
+                        if (shouldPlay) {
+                          cmd("playVideo");
+                        } else {
+                          cmd("pauseVideo");
+                        }
+                        pendingSyncRef.current = null;
+                      } else {
+                        if (playing) cmd("playVideo");
+                        else cmd("pauseVideo");
+                      }
                       cmd("getDuration");
                     }}
                   />
