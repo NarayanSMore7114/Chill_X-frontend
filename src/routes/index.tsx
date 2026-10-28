@@ -21,7 +21,7 @@ export const Route = createFileRoute("/")({
 function Lobby() {
   const navigate = useNavigate();
   const [name, setName] = useState("");
-  const [color, setColor] = useState(AVATAR_COLORS[0]);
+  const [color, setColor] = useState(AVATAR_COLORS[0]?? "bg-rose-500");
   const [created, setCreated] = useState<string | null>(null);
   const [joinCode, setJoinCode] = useState("");
   const [copied, setCopied] = useState(false);

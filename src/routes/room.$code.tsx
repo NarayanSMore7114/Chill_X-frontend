@@ -1,11 +1,14 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  Check, Copy, Crown, GripVertical, Headphones, ListMusic, LogOut, MessageSquare, Pause, Play, Plus,
-  Rewind, FastForward, Search, Send, Share2, ShieldAlert, ShieldCheck, SkipBack, SkipForward, Smile, ThumbsUp, Volume2, VolumeX, Vote, X,
+  Check, Copy, Crown, Headphones, ListMusic, LogOut, MessageSquare, Pause, Play, Plus,
+  Rewind, FastForward, Search, Send, Share2, ShieldAlert, ShieldCheck, SkipBack, SkipForward, Smile, ThumbsUp, Volume2, VolumeX, Vote,
 } from "lucide-react";
 import { toast } from "sonner";
-import { CATALOG, INITIAL_QUEUE, fmt, thumb, type Listener, type Message, type Track } from "@/lib/mock";
+import {
+  CATALOG, INITIAL_QUEUE, fmt, thumb, formatYouTubeTrack,
+  type Listener, type Message, type Track,
+} from "@/lib/mock";
 import { cn } from "@/lib/utils";
 import { socket } from "@/socket";
 
@@ -15,6 +18,17 @@ export const Route = createFileRoute("/room/$code")({
 
 const EMOJIS = ["🔥", "😍", "🎵", "🎧", "💜", "😂", "🙌", "👏", "🥹", "✨", "🕺", "💯"];
 const now = () => new Date().toTimeString().slice(0, 5);
+
+// Fallback directly to the live Render domain to prevent localhost issues on deployed/external clients
+const BACKEND_URL =
+  (import.meta.env.VITE_BACKEND_URL as string) ||
+  (import.meta.env["VITE_BACKEND_URL"] as string) ||
+  "https://chill-x-backend.onrender.com";
+
+const getVideoId = (t?: Track | null): string => {
+  if (!t) return "";
+  return t.videoId || t.url || t.id || "";
+};
 
 interface RoomUser extends Listener {
   isHost?: boolean;
@@ -48,22 +62,25 @@ function Room() {
   const cleanCode = useMemo(() => String(code || "").trim().toUpperCase(), [code]);
   const navigate = useNavigate();
 
+  // SSR-safe client initialization
   const [me] = useState<Listener>(() => {
-    try {
-      const s = typeof window !== "undefined" ? sessionStorage.getItem("chillx-user") : null;
-      if (s) {
-        const u = JSON.parse(s);
-        return { id: "me", name: u.name?.trim() || "You", color: u.color || "bg-avatar-6" };
-      }
-    } catch {}
+    if (typeof window !== "undefined") {
+      try {
+        const s = sessionStorage.getItem("chillx-user");
+        if (s) {
+          const u = JSON.parse(s);
+          return { id: "me", name: u.name?.trim() || "You", color: u.color || "bg-avatar-6" };
+        }
+      } catch {}
+    }
     return { id: "me", name: "You", color: "bg-avatar-6" };
   });
 
-  const [queue, setQueue] = useState<Track[]>(INITIAL_QUEUE);
-  const queueRef = useRef<Track[]>(INITIAL_QUEUE);
+  const [queue, setQueue] = useState<Track[]>(INITIAL_QUEUE || []);
+  const queueRef = useRef<Track[]>(INITIAL_QUEUE || []);
   queueRef.current = queue;
 
-  const [currentId, setCurrentId] = useState<string>(INITIAL_QUEUE[0]?.id || "");
+  const [currentId, setCurrentId] = useState<string>(() => getVideoId(INITIAL_QUEUE?.[0]));
   const [playing, setPlaying] = useState(false);
   const [time, setTime] = useState(0);
   const [volume, setVolume] = useState(70);
@@ -75,7 +92,9 @@ function Room() {
   const [canPlay, setCanPlay] = useState(false);
   const [selectedUserForDj, setSelectedUserForDj] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
-  const [myId, setMyId] = useState<string>(socket.id || "");
+  
+  // Safe initial state for socket id in Node SSR
+  const [myId, setMyId] = useState<string>("");
 
   const [skipVotes, setSkipVotes] = useState({ count: 0, required: 1 });
   const [hasVotedSkip, setHasVotedSkip] = useState(false);
@@ -83,10 +102,11 @@ function Room() {
   const frame = useRef<HTMLIFrameElement>(null);
   const canControl = isHost || canPlay;
 
-  const idx = Math.max(0, queue.findIndex((t) => t.id === currentId));
-  const current = queue[idx];
+  const idx = Math.max(0, queue.findIndex((t) => getVideoId(t) === currentId || t.id === currentId));
+  const current = queue[idx] || queue[0];
 
   const cmd = (func: string, args: unknown[] = []) => {
+    if (typeof window === "undefined") return;
     frame.current?.contentWindow?.postMessage(
       JSON.stringify({ event: "command", func, args }),
       "*"
@@ -94,6 +114,7 @@ function Room() {
   };
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
     if (socket.id) setMyId(socket.id);
     const onConnect = () => setMyId(socket.id || "");
     socket.on("connect", onConnect);
@@ -103,7 +124,7 @@ function Room() {
   }, []);
 
   useEffect(() => {
-    if (!cleanCode) return;
+    if (typeof window === "undefined" || !cleanCode) return;
 
     const username = me.name !== "You" ? me.name : `User-${socket.id ? socket.id.slice(0, 4) : "Guest"}`;
     socket.emit("join_room", { roomcode: cleanCode, username });
@@ -115,12 +136,18 @@ function Room() {
       isHost?: boolean;
       canPlay?: boolean;
       queue?: Track[];
+      currentTrackId?: string;
       skipVotes?: { count: number; required: number; hasVoted: boolean };
     }) => {
       if (typeof data?.isHost === "boolean") setIsHost(data.isHost);
       if (typeof data?.canPlay === "boolean") setCanPlay(data.canPlay);
       if (data?.recentMessages && Array.isArray(data.recentMessages)) setMessages(data.recentMessages);
-      if (data?.queue && Array.isArray(data.queue) && data.queue.length > 0) setQueue(data.queue);
+      if (data?.queue && Array.isArray(data.queue) && data.queue.length > 0) {
+        setQueue(data.queue);
+        if (data.currentTrackId) {
+          setCurrentId(data.currentTrackId);
+        }
+      }
 
       if (data?.skipVotes) {
         setSkipVotes({ count: data.skipVotes.count, required: data.skipVotes.required });
@@ -169,7 +196,7 @@ function Room() {
     const handleTrackChanged = ({ trackIndex }: { trackIndex: number }) => {
       const target = queueRef.current[trackIndex];
       if (target) {
-        setCurrentId(target.id);
+        setCurrentId(getVideoId(target));
         setTime(0);
         setPlaying(true);
         setHasVotedSkip(false);
@@ -182,7 +209,9 @@ function Room() {
     };
 
     const handleQueueUpdated = (newQueue: Track[]) => {
-      setQueue(newQueue);
+      if (Array.isArray(newQueue)) {
+        setQueue(newQueue);
+      }
     };
 
     const handlePermissionDenied = ({ message }: { message: string }) => {
@@ -253,9 +282,10 @@ function Room() {
 
   useEffect(() => {
     if (!playing) return;
+    const dur = current?.duration || 180;
     const interval = setInterval(() => {
       setTime((t) => {
-        if (current && t + 1 >= current.duration) {
+        if (current && t + 1 >= dur) {
           if (canControl) {
             socket.emit("track_ended_auto_next", { roomcode: cleanCode });
           }
@@ -316,7 +346,8 @@ function Room() {
 
   const seek = (targetTime: number) => {
     if (!canControl) return;
-    const validTime = Math.min(Math.max(0, targetTime), current?.duration ?? 0);
+    const maxDur = current?.duration || 180;
+    const validTime = Math.min(Math.max(0, targetTime), maxDur);
     setTime(validTime);
     cmd("seekTo", [validTime, true]);
     socket.emit("seek_music", { roomcode: cleanCode, currentTime: validTime });
@@ -327,7 +358,7 @@ function Room() {
       toast.error("Only the room Host or DJs can choose tracks.");
       return;
     }
-    const selectedIdx = queue.findIndex((t) => t.id === id);
+    const selectedIdx = queue.findIndex((t) => getVideoId(t) === id || t.id === id);
     if (selectedIdx === -1) return;
 
     setCurrentId(id);
@@ -358,7 +389,7 @@ function Room() {
   function next() {
     if (queue.length) {
       const nextIndex = (idx + 1) % queue.length;
-      play(queue[nextIndex]!.id);
+      play(getVideoId(queue[nextIndex]) || queue[nextIndex]!.id);
     }
   }
 
@@ -367,19 +398,28 @@ function Room() {
       seek(0);
     } else if (queue.length) {
       const prevIndex = (idx - 1 + queue.length) % queue.length;
-      play(queue[prevIndex]!.id);
+      play(getVideoId(queue[prevIndex]) || queue[prevIndex]!.id);
     }
   };
 
   const addTrack = (t: Track) => {
-    const newTrack = { ...t, id: `${t.id}-${Date.now()}`, votes: [] };
+    const vid = getVideoId(t);
+    const newTrack: Track = {
+      ...t,
+      id: `${vid}-${Date.now()}`,
+      videoId: vid,
+      url: vid,
+      votes: [],
+    };
     socket.emit("add_to_queue", { roomcode: cleanCode, song: newTrack });
     toast.success(`Added "${t.title}" to shared queue`);
   };
 
   const copy = (text: string, label: string) => {
-    navigator.clipboard?.writeText(text);
-    toast.success(label);
+    if (typeof navigator !== "undefined" && navigator.clipboard) {
+      navigator.clipboard.writeText(text);
+      toast.success(label);
+    }
   };
 
   const send = (text: string) => {
@@ -405,6 +445,8 @@ function Room() {
     return activeUsers.length > 0 ? activeUsers : [{ ...me, isHost: true, canPlay: true }];
   }, [activeUsers, me]);
 
+  const activeVideoId = getVideoId(current);
+
   return (
     <div className="bg-ambient flex h-screen flex-col overflow-hidden">
       <header className="flex h-16 shrink-0 items-center justify-between gap-4 border-b border-border bg-background/80 px-4 backdrop-blur-xl z-30 md:px-6">
@@ -422,7 +464,10 @@ function Room() {
             </button>
             <button
               title="Copy share link"
-              onClick={() => copy(window.location.href, "Invite link copied")}
+              onClick={() => {
+                const url = typeof window !== "undefined" ? window.location.href : cleanCode;
+                copy(url, "Invite link copied");
+              }}
               className="press grid size-7 place-items-center rounded-full text-muted-foreground hover:bg-secondary hover:text-foreground"
             >
               <Share2 className="size-3.5" />
@@ -452,15 +497,15 @@ function Room() {
               <div key={l.id} className="relative">
                 <button
                   type="button"
-                  title={isHost && l.id !== socket.id ? `Manage permissions for ${l.name}` : l.name}
+                  title={isHost && l.id !== myId ? `Manage permissions for ${l.name}` : l.name}
                   onClick={() => {
-                    if (isHost && l.id !== socket.id) {
+                    if (isHost && l.id !== myId) {
                       setSelectedUserForDj(selectedUserForDj === l.id ? null : l.id);
                     }
                   }}
                   className={cn(
                     "rounded-full ring-2 ring-background transition hover:scale-105",
-                    isHost && l.id !== socket.id && "cursor-pointer hover:ring-primary"
+                    isHost && l.id !== myId && "cursor-pointer hover:ring-primary"
                   )}
                 >
                   <Avatar l={l} />
@@ -508,14 +553,14 @@ function Room() {
             </div>
 
             <div className="relative aspect-video overflow-hidden rounded-2xl border border-border bg-card shadow-screen z-10">
-              {current ? (
+              {activeVideoId ? (
                 <>
                   <iframe
                     ref={frame}
-                    key={current.id}
+                    key={activeVideoId}
                     className="size-full"
-                    src={`https://www.youtube.com/embed/${current.videoId}?enablejsapi=1&origin=${encodeURIComponent(typeof window !== "undefined" ? window.location.origin : "")}&controls=0&rel=0&modestbranding=1&autoplay=0`}
-                    title={current.title}
+                    src={`https://www.youtube.com/embed/${activeVideoId}?enablejsapi=1&origin=${encodeURIComponent(typeof window !== "undefined" ? window.location.origin : "")}&controls=0&rel=0&modestbranding=1&autoplay=0`}
+                    title={current?.title || "Chill_X Track"}
                     allow="autoplay; encrypted-media"
                     onLoad={() => {
                       cmd("setVolume", [volume]);
@@ -572,15 +617,17 @@ function PlayerCard(p: {
   onToggle: () => void; onSeek: (t: number) => void; onPrev: () => void; onNext: () => void;
   onVolume: (v: number) => void; onMute: () => void;
 }) {
-  const pct = (p.time / p.track.duration) * 100;
-  const long = p.track.title.length > 22;
+  const duration = p.track.duration || 180;
+  const pct = Math.min(100, Math.max(0, (p.time / duration) * 100));
+  const long = (p.track.title || "").length > 22;
   const iconBtn = cn("press grid size-10 place-items-center rounded-full text-muted-foreground hover:bg-secondary hover:text-foreground", !p.canControl && "opacity-40 cursor-not-allowed");
+  const vid = getVideoId(p.track);
 
   return (
     <div className="glass rounded-2xl p-5 space-y-4">
       <div className="flex flex-col gap-5 md:flex-row md:items-center">
         <div className="flex min-w-0 items-center gap-3 md:w-56">
-          <img src={thumb(p.track.videoId)} alt="" className={cn("size-14 rounded-lg object-cover transition", p.playing && "shadow-glow")} />
+          <img src={p.track.thumbnail || thumb(vid)} alt="" className={cn("size-14 rounded-lg object-cover transition", p.playing && "shadow-glow")} />
           <div className="min-w-0 overflow-hidden">
             <div className="overflow-hidden whitespace-nowrap">
               {long ? (
@@ -608,12 +655,12 @@ function PlayerCard(p: {
               disabled={!p.canControl}
               className={cn("range flex-1", !p.canControl && "cursor-not-allowed")}
               min={0}
-              max={p.track.duration}
+              max={duration}
               value={p.time}
               style={{ "--p": `${pct}%` } as React.CSSProperties}
               onChange={(e) => p.onSeek(+e.target.value)}
             />
-            <span>{fmt(p.track.duration)}</span>
+            <span>{fmt(duration)}</span>
           </div>
         </div>
 
@@ -669,7 +716,8 @@ function QueueList({
     <ul className="flex-1 space-y-1 overflow-y-auto px-3 pb-3">
       {queue.length === 0 && <li className="p-6 text-center text-sm text-muted-foreground">Queue is empty</li>}
       {queue.map((t) => {
-        const active = t.id === currentId;
+        const vid = getVideoId(t);
+        const active = vid === currentId || t.id === currentId;
         const votes = Array.isArray(t.votes) ? t.votes : [];
         const hasVoted = currentSocketId ? votes.includes(currentSocketId) : false;
 
@@ -682,14 +730,14 @@ function QueueList({
             )}
           >
             {canControl ? (
-              <button onClick={() => onPlay(t.id)} className="relative shrink-0">
-                <img src={thumb(t.videoId)} alt="" className="h-10 w-14 rounded-md object-cover" />
+              <button onClick={() => onPlay(vid || t.id)} className="relative shrink-0">
+                <img src={t.thumbnail || thumb(vid)} alt="" className="h-10 w-14 rounded-md object-cover" />
                 <span className="absolute inset-0 grid place-items-center rounded-md bg-background/60 opacity-0 transition group-hover:opacity-100">
                   <Play className="size-4 fill-current" />
                 </span>
               </button>
             ) : (
-              <img src={thumb(t.videoId)} alt="" className="h-10 w-14 shrink-0 rounded-md object-cover" />
+              <img src={t.thumbnail || thumb(vid)} alt="" className="h-10 w-14 shrink-0 rounded-md object-cover" />
             )}
 
             <div className="min-w-0 flex-1">
@@ -741,34 +789,43 @@ function SearchBar({ onAdd }: { onAdd: (t: Track) => void }) {
   useEffect(() => {
     const query = q.trim();
     if (!query) {
-      setLiveResults(CATALOG);
+      setLiveResults(CATALOG || []);
+      setOpen(false);
       return;
     }
 
-    const timer = setTimeout(() => {
+    const timer = setTimeout(async () => {
       setSearching(true);
-      socket.emit("search_youtube", query, (res: { success: boolean; results?: Array<{ id: string; title: string; artist: string; duration: string }> }) => {
-        setSearching(false);
-        if (res?.success && res.results && res.results.length > 0) {
-          const formatted: Track[] = res.results.map((r) => {
-            const parts = (r.duration || "3:00").split(":").map(Number);
-            const dur = parts.length === 2 ? (parts[0]! * 60 + parts[1]!) : 180;
-            return {
-              id: r.id,
-              videoId: r.id,
-              title: r.title,
-              artist: r.artist || "YouTube Artist",
-              duration: dur,
-            };
-          });
+      setOpen(true);
+
+      try {
+        const res = await fetch(`${BACKEND_URL}/api/search?q=${encodeURIComponent(query)}`);
+        const data = await res.json();
+
+        if (data.tracks && Array.isArray(data.tracks) && data.tracks.length > 0) {
+          const formatted = data.tracks.map((t: any) => formatYouTubeTrack(t));
+          setLiveResults(formatted);
+        } else if (data.items && Array.isArray(data.items)) {
+          const formatted = data.items.map((t: any) => formatYouTubeTrack(t));
           setLiveResults(formatted);
         } else {
+          // Fallback to local catalog matches
           setLiveResults(
-            CATALOG.filter((t) => `${t.title} ${t.artist}`.toLowerCase().includes(query.toLowerCase()))
+            (CATALOG || []).filter((t) =>
+              `${t.title} ${t.artist}`.toLowerCase().includes(query.toLowerCase())
+            )
           );
         }
-      });
-    }, 400);
+      } catch (err) {
+        setLiveResults(
+          (CATALOG || []).filter((t) =>
+            `${t.title} ${t.artist}`.toLowerCase().includes(query.toLowerCase())
+          )
+        );
+      } finally {
+        setSearching(false);
+      }
+    }, 350);
 
     return () => clearTimeout(timer);
   }, [q]);
@@ -778,32 +835,71 @@ function SearchBar({ onAdd }: { onAdd: (t: Track) => void }) {
       <Search className="absolute left-4 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
       <input
         value={q}
-        onChange={(e) => { setQ(e.target.value); setOpen(true); }}
-        onFocus={() => setOpen(true)}
-        onBlur={() => setTimeout(() => setOpen(false), 200)}
+        onChange={(e) => {
+          setQ(e.target.value);
+          setOpen(true);
+        }}
+        onFocus={() => {
+          if (q.trim()) setOpen(true);
+        }}
         placeholder={searching ? "Searching YouTube..." : "Search YouTube tracks..."}
-        className="glass h-12 w-full rounded-xl pl-11 pr-4 text-sm outline-none transition focus:ring-2 focus:ring-primary/40"
+        className="glass h-12 w-full rounded-xl pl-11 pr-4 text-sm outline-none transition focus:ring-2 focus:ring-primary/40 bg-secondary/50 text-foreground"
       />
-      {open && (
-        <div className="absolute top-full left-0 right-0 mt-2 max-h-96 overflow-y-auto rounded-xl border border-border bg-popover/95 p-1.5 shadow-2xl backdrop-blur-xl z-50">
-          {liveResults.length === 0 && <p className="p-4 text-center text-sm text-muted-foreground">No results for “{q}”</p>}
-          {liveResults.map((t) => (
-            <div key={t.id} className="group flex items-center gap-3 rounded-lg p-2 transition hover:bg-secondary">
-              <img src={thumb(t.videoId)} alt="" className="h-12 w-20 rounded-md object-cover" />
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-semibold">{t.title}</p>
-                <p className="truncate text-xs text-muted-foreground">{t.artist} · {fmt(t.duration)}</p>
-              </div>
-              <button
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={() => { onAdd(t); setOpen(false); }}
-                className="press flex shrink-0 items-center gap-1 rounded-md border border-primary/40 px-2.5 py-1.5 text-xs font-semibold text-primary hover:bg-primary hover:text-primary-foreground"
-              >
-                <Plus className="size-3.5" /> Add to Queue
-              </button>
-            </div>
-          ))}
-        </div>
+
+      {open && q.trim().length > 0 && (
+        <>
+          <div
+            className="fixed inset-0 z-40"
+            onClick={() => setOpen(false)}
+          />
+          <div className="absolute top-full left-0 right-0 mt-2 max-h-96 overflow-y-auto rounded-xl border border-border bg-popover/95 p-1.5 shadow-2xl backdrop-blur-xl z-50">
+            {searching && (
+              <p className="p-4 text-center text-sm text-muted-foreground animate-pulse">
+                Fetching live tracks from YouTube...
+              </p>
+            )}
+
+            {!searching && liveResults.length === 0 && (
+              <p className="p-4 text-center text-sm text-muted-foreground">
+                No results for “{q}”
+              </p>
+            )}
+
+            {!searching &&
+              liveResults.map((t) => {
+                const vid = getVideoId(t);
+                return (
+                  <div
+                    key={t.id}
+                    className="group flex items-center gap-3 rounded-lg p-2 transition hover:bg-secondary"
+                  >
+                    <img
+                      src={t.thumbnail || thumb(vid)}
+                      alt=""
+                      className="h-12 w-20 rounded-md object-cover flex-shrink-0"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-semibold">{t.title}</p>
+                      <p className="truncate text-xs text-muted-foreground">
+                        {t.artist} · {fmt(t.duration)}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onAdd(t);
+                        setOpen(false);
+                        setQ("");
+                      }}
+                      className="press flex shrink-0 items-center gap-1 rounded-md border border-primary/40 px-2.5 py-1.5 text-xs font-semibold text-primary hover:bg-primary hover:text-primary-foreground"
+                    >
+                      <Plus className="size-3.5" /> Add to Queue
+                    </button>
+                  </div>
+                );
+              })}
+          </div>
+        </>
       )}
     </div>
   );
@@ -842,7 +938,7 @@ function Chat({ messages, meId, onSend }: { messages: Message[]; meId: string; o
             const mine = m.userId === "me" || m.userId === meId;
             return (
               <div key={m.id} className={cn("flex gap-2.5", mine && "flex-row-reverse")}>
-                <Avatar l={{ name: m?.name || "Guest", color: m?.color || "bg-avatar-2" }} />
+                <Avatar l={{ id: m.userId, name: m?.name || "Guest", color: m?.color || "bg-avatar-2" }} />
                 <div className={cn("max-w-[75%] space-y-1", mine && "items-end text-right")}>
                   <div className={cn("flex items-center gap-2 text-[11px]", mine && "justify-end")}>
                     <span className="rounded-full bg-secondary px-2 py-0.5 font-semibold">{m.name}</span>
