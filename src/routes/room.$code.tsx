@@ -19,7 +19,6 @@ export const Route = createFileRoute("/room/$code")({
 const EMOJIS = ["🔥", "😍", "🎵", "🎧", "💜", "😂", "🙌", "👏", "🥹", "✨", "🕺", "💯"];
 const now = () => new Date().toTimeString().slice(0, 5);
 
-// Fallback directly to the live Render domain to prevent localhost issues on deployed/external clients
 const BACKEND_URL =
   (import.meta.env.VITE_BACKEND_URL as string) ||
   (import.meta.env["VITE_BACKEND_URL"] as string) ||
@@ -62,7 +61,6 @@ function Room() {
   const cleanCode = useMemo(() => String(code || "").trim().toUpperCase(), [code]);
   const navigate = useNavigate();
 
-  // SSR-safe client initialization
   const [me] = useState<Listener>(() => {
     if (typeof window !== "undefined") {
       try {
@@ -92,8 +90,6 @@ function Room() {
   const [canPlay, setCanPlay] = useState(false);
   const [selectedUserForDj, setSelectedUserForDj] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
-  
-  // Safe initial state for socket id in Node SSR
   const [myId, setMyId] = useState<string>("");
 
   const [skipVotes, setSkipVotes] = useState({ count: 0, required: 1 });
@@ -112,6 +108,32 @@ function Room() {
       "*"
     );
   };
+
+  // Capture real runtime directly from YouTube iframe infoDelivery events
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const handleIframeMessage = (event: MessageEvent) => {
+      try {
+        const data = typeof event.data === "string" ? JSON.parse(event.data) : event.data;
+        if (data?.event === "infoDelivery" && data?.info?.duration) {
+          const accurateDuration = Math.round(data.info.duration);
+          if (accurateDuration > 0 && current && current.duration !== accurateDuration) {
+            setQueue((prevQueue) =>
+              prevQueue.map((t) =>
+                t.id === current.id || getVideoId(t) === getVideoId(current)
+                  ? { ...t, duration: accurateDuration }
+                  : t
+              )
+            );
+          }
+        }
+      } catch {}
+    };
+
+    window.addEventListener("message", handleIframeMessage);
+    return () => window.removeEventListener("message", handleIframeMessage);
+  }, [current]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -371,7 +393,6 @@ function Room() {
     socket.emit("vote_track", {
       roomcode: cleanCode,
       trackId,
-      currentTrackId: currentId,
       defaultQueue: queue,
     });
   };
@@ -497,15 +518,15 @@ function Room() {
               <div key={l.id} className="relative">
                 <button
                   type="button"
-                  title={isHost && l.id !== myId ? `Manage permissions for ${l.name}` : l.name}
+                  title={isHost && l.id !== socket.id ? `Manage permissions for ${l.name}` : l.name}
                   onClick={() => {
-                    if (isHost && l.id !== myId) {
+                    if (isHost && l.id !== socket.id) {
                       setSelectedUserForDj(selectedUserForDj === l.id ? null : l.id);
                     }
                   }}
                   className={cn(
                     "rounded-full ring-2 ring-background transition hover:scale-105",
-                    isHost && l.id !== myId && "cursor-pointer hover:ring-primary"
+                    isHost && l.id !== socket.id && "cursor-pointer hover:ring-primary"
                   )}
                 >
                   <Avatar l={l} />
@@ -567,6 +588,7 @@ function Room() {
                       if (muted) cmd("mute");
                       if (playing) cmd("playVideo");
                       else cmd("pauseVideo");
+                      cmd("getDuration");
                     }}
                   />
                   <div className="absolute inset-0 cursor-default" />
@@ -600,7 +622,7 @@ function Room() {
           {tab === "queue" ? (
             <QueueList
               queue={queue} currentId={currentId} canControl={canControl}
-              onPlay={play} onVote={voteTrack} currentSocketId={myId}
+              onPlay={play} onVote={voteTrack} currentSocketId={socket.id || myId}
             />
           ) : (
             <Chat messages={messages} meId="me" onSend={send} />
@@ -802,14 +824,10 @@ function SearchBar({ onAdd }: { onAdd: (t: Track) => void }) {
         const res = await fetch(`${BACKEND_URL}/api/search?q=${encodeURIComponent(query)}`);
         const data = await res.json();
 
-        if (data.tracks && Array.isArray(data.tracks) && data.tracks.length > 0) {
+        if (data?.tracks && Array.isArray(data.tracks) && data.tracks.length > 0) {
           const formatted = data.tracks.map((t: any) => formatYouTubeTrack(t));
           setLiveResults(formatted);
-        } else if (data.items && Array.isArray(data.items)) {
-          const formatted = data.items.map((t: any) => formatYouTubeTrack(t));
-          setLiveResults(formatted);
         } else {
-          // Fallback to local catalog matches
           setLiveResults(
             (CATALOG || []).filter((t) =>
               `${t.title} ${t.artist}`.toLowerCase().includes(query.toLowerCase())
@@ -825,7 +843,7 @@ function SearchBar({ onAdd }: { onAdd: (t: Track) => void }) {
       } finally {
         setSearching(false);
       }
-    }, 350);
+    }, 400);
 
     return () => clearTimeout(timer);
   }, [q]);
@@ -848,10 +866,7 @@ function SearchBar({ onAdd }: { onAdd: (t: Track) => void }) {
 
       {open && q.trim().length > 0 && (
         <>
-          <div
-            className="fixed inset-0 z-40"
-            onClick={() => setOpen(false)}
-          />
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
           <div className="absolute top-full left-0 right-0 mt-2 max-h-96 overflow-y-auto rounded-xl border border-border bg-popover/95 p-1.5 shadow-2xl backdrop-blur-xl z-50">
             {searching && (
               <p className="p-4 text-center text-sm text-muted-foreground animate-pulse">
