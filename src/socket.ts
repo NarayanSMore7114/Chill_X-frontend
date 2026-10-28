@@ -12,10 +12,10 @@ export const socket: Socket = io(BACKEND_URL, {
   upgrade: true,
   withCredentials: false,
   reconnection: true,
-  reconnectionAttempts: 15,
+  reconnectionAttempts: 20,
   reconnectionDelay: 1500,
   reconnectionDelayMax: 5000,
-  timeout: 45000, // Accommodates Render free tier cold starts
+  timeout: 45000, // Tolerates free Render cold starts
 });
 
 export const getSocket = (): Socket => {
@@ -25,13 +25,12 @@ export const getSocket = (): Socket => {
   return socket;
 };
 
-// Client-only event logging (prevents Node SSR hydration warnings)
 if (isBrowser) {
   socket.on("connect", () => {
-    console.log("[SOCKET] Connected to backend! Socket ID:", socket.id);
+    console.log("[SOCKET] Connected to Chill_X backend! ID:", socket.id);
   });
 
   socket.on("connect_error", (err) => {
-    console.warn("[SOCKET] Connection notice:", err.message);
+    console.warn("[SOCKET] Server notice:", err.message);
   });
 }

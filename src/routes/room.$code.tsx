@@ -2,7 +2,8 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Check, Copy, Crown, Headphones, ListMusic, LogOut, MessageSquare, Pause, Play, Plus,
-  Rewind, FastForward, Search, Send, Share2, ShieldAlert, ShieldCheck, SkipBack, SkipForward, Smile, ThumbsUp, Volume2, VolumeX, Vote,
+  Rewind, FastForward, Search, Send, Share2, ShieldAlert, ShieldCheck, SkipBack, SkipForward,
+  Smile, ThumbsUp, Volume2, VolumeX, Vote, Trash2, Sparkles, Volume1
 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -32,6 +33,12 @@ const getVideoId = (t?: Track | null): string => {
 interface RoomUser extends Listener {
   isHost?: boolean;
   canPlay?: boolean;
+}
+
+interface FloatingReaction {
+  id: string;
+  emoji: string;
+  left: number;
 }
 
 function Avatar({ l, size = "size-8" }: { l?: RoomUser; size?: string }) {
@@ -91,6 +98,10 @@ function Room() {
   const [selectedUserForDj, setSelectedUserForDj] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [myId, setMyId] = useState<string>("");
+  const [needsAudioUnlock, setNeedsAudioUnlock] = useState(true);
+
+  // Floating live emoji reaction state
+  const [reactions, setReactions] = useState<FloatingReaction[]>([]);
 
   const [skipVotes, setSkipVotes] = useState({ count: 0, required: 1 });
   const [hasVotedSkip, setHasVotedSkip] = useState(false);
@@ -109,7 +120,13 @@ function Room() {
     );
   };
 
-  // Capture real runtime directly from YouTube iframe infoDelivery events
+  const unlockAudio = () => {
+    setNeedsAudioUnlock(false);
+    cmd("unMute");
+    if (playing) cmd("playVideo");
+  };
+
+  // Real-time metadata capture from YouTube player iframe
   useEffect(() => {
     if (typeof window === "undefined") return;
 
@@ -277,6 +294,18 @@ function Room() {
       setSkipVotes((v) => ({ ...v, required: Math.floor(usersList.length / 2) + 1 }));
     };
 
+    const handleReceiveReaction = ({ emoji }: { emoji: string }) => {
+      const newR: FloatingReaction = {
+        id: `${Date.now()}-${Math.random()}`,
+        emoji,
+        left: Math.floor(15 + Math.random() * 70),
+      };
+      setReactions((prev) => [...prev, newR]);
+      setTimeout(() => {
+        setReactions((prev) => prev.filter((r) => r.id !== newR.id));
+      }, 2400);
+    };
+
     socket.on("sync_state", handleSyncState);
     socket.on("music_played", handleMusicPlayed);
     socket.on("music_paused", handleMusicPaused);
@@ -287,6 +316,7 @@ function Room() {
     socket.on("permission_denied", handlePermissionDenied);
     socket.on("receive_message", handleReceiveMessage);
     socket.on("room_users_update", handleRoomUsers);
+    socket.on("receive_reaction", handleReceiveReaction);
 
     return () => {
       socket.off("sync_state", handleSyncState);
@@ -299,6 +329,7 @@ function Room() {
       socket.off("permission_denied", handlePermissionDenied);
       socket.off("receive_message", handleReceiveMessage);
       socket.off("room_users_update", handleRoomUsers);
+      socket.off("receive_reaction", handleReceiveReaction);
     };
   }, [cleanCode, me.name]);
 
@@ -397,6 +428,14 @@ function Room() {
     });
   };
 
+  const removeTrack = (trackId: string) => {
+    socket.emit("remove_from_queue", {
+      roomcode: cleanCode,
+      trackId,
+    });
+    toast.success("Removed track from queue");
+  };
+
   const handleVoteToSkip = () => {
     setHasVotedSkip((prev) => !prev);
     socket.emit("vote_to_skip", { roomcode: cleanCode });
@@ -405,6 +444,10 @@ function Room() {
   const toggleDjPermission = (targetUserId: string) => {
     socket.emit("toggle_dj_permission", { roomcode: cleanCode, targetUserId });
     setSelectedUserForDj(null);
+  };
+
+  const sendReaction = (emoji: string) => {
+    socket.emit("send_reaction", { roomcode: cleanCode, emoji });
   };
 
   function next() {
@@ -469,7 +512,17 @@ function Room() {
   const activeVideoId = getVideoId(current);
 
   return (
-    <div className="bg-ambient flex h-screen flex-col overflow-hidden">
+    <div className="bg-ambient flex h-screen flex-col overflow-hidden select-none">
+      {/* Audio Unlock Banner */}
+      {needsAudioUnlock && (
+        <div 
+          onClick={unlockAudio}
+          className="bg-primary px-4 py-2 text-center text-xs font-semibold text-primary-foreground cursor-pointer transition hover:brightness-110 flex items-center justify-center gap-2 z-50 animate-pulse"
+        >
+          <Volume1 className="size-4" /> Tap anywhere here to activate synchronized room audio
+        </div>
+      )}
+
       <header className="flex h-16 shrink-0 items-center justify-between gap-4 border-b border-border bg-background/80 px-4 backdrop-blur-xl z-30 md:px-6">
         <div className="flex items-center gap-4">
           <span className="font-display text-xl font-bold">Chill<span className="text-primary">_X</span></span>
@@ -574,6 +627,19 @@ function Room() {
             </div>
 
             <div className="relative aspect-video overflow-hidden rounded-2xl border border-border bg-card shadow-screen z-10">
+              {/* Floating Real-Time Reaction Overlay */}
+              <div className="pointer-events-none absolute inset-0 overflow-hidden z-20">
+                {reactions.map((r) => (
+                  <div
+                    key={r.id}
+                    className="absolute bottom-2 text-3xl animate-float-up select-none"
+                    style={{ left: `${r.left}%` }}
+                  >
+                    {r.emoji}
+                  </div>
+                ))}
+              </div>
+
               {activeVideoId ? (
                 <>
                   <iframe
@@ -591,11 +657,30 @@ function Room() {
                       cmd("getDuration");
                     }}
                   />
-                  <div className="absolute inset-0 cursor-default" />
+                  <div className="absolute inset-0 cursor-default" onClick={unlockAudio} />
                 </>
               ) : (
                 <div className="grid size-full place-items-center text-muted-foreground">Queue is empty — search for a track</div>
               )}
+            </div>
+
+            {/* Quick Live Emoji Reactions Bar */}
+            <div className="glass flex items-center justify-between rounded-xl px-4 py-2 text-xs">
+              <span className="flex items-center gap-1.5 font-semibold text-muted-foreground">
+                <Sparkles className="size-3.5 text-primary" /> React Live:
+              </span>
+              <div className="flex gap-2">
+                {["🔥", "❤️", "👏", "🕺", "🎧", "🚀"].map((emoji) => (
+                  <button
+                    key={emoji}
+                    type="button"
+                    onClick={() => sendReaction(emoji)}
+                    className="press rounded-lg p-1.5 text-lg hover:bg-secondary/70 transition"
+                  >
+                    {emoji}
+                  </button>
+                ))}
+              </div>
             </div>
 
             {current && (
@@ -622,7 +707,7 @@ function Room() {
           {tab === "queue" ? (
             <QueueList
               queue={queue} currentId={currentId} canControl={canControl}
-              onPlay={play} onVote={voteTrack} currentSocketId={socket.id || myId}
+              onPlay={play} onVote={voteTrack} onRemove={removeTrack} currentSocketId={socket.id || myId}
             />
           ) : (
             <Chat messages={messages} meId="me" onSend={send} />
@@ -725,6 +810,7 @@ function QueueList({
   canControl,
   onPlay,
   onVote,
+  onRemove,
   currentSocketId,
 }: {
   queue: Track[];
@@ -732,6 +818,7 @@ function QueueList({
   canControl: boolean;
   onPlay: (id: string) => void;
   onVote: (id: string) => void;
+  onRemove: (id: string) => void;
   currentSocketId?: string;
 }) {
   return (
@@ -795,6 +882,21 @@ function QueueList({
             )}
 
             <span className="font-display text-xs tabular-nums text-muted-foreground">{fmt(t.duration)}</span>
+
+            {/* Remove Track Button for DJs and Host */}
+            {canControl && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onRemove(t.id);
+                }}
+                className="opacity-0 group-hover:opacity-100 transition p-1 text-muted-foreground hover:text-destructive rounded-md"
+                title="Remove from queue"
+              >
+                <Trash2 className="size-3.5" />
+              </button>
+            )}
           </li>
         );
       })}
