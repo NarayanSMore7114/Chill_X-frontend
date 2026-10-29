@@ -3,7 +3,7 @@ import { io, Socket } from "socket.io-client";
 const isBrowser = typeof window !== "undefined";
 
 const BACKEND_URL =
-  (import.meta.env.VITE_BACKEND_URL as string) ||
+  (import.meta.env['VITE_BACKEND_URL'] as string) ||
   "https://chill-x-backend.onrender.com";
 
 export const socket: Socket = io(BACKEND_URL, {
